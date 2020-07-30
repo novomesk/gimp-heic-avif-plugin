@@ -19,6 +19,7 @@
 #include "config.h"
 
 #include <libheif/heif.h>
+#include <lcms2.h>
 
 #include <libgimp/gimp.h>
 #include <libgimp/gimpui.h>
@@ -369,6 +370,172 @@ get_file_size (GFile   *file,
   return size;
 }
 
+static void
+heifplugin_color_profile_set_tag (cmsHPROFILE      profile,
+                                  cmsTagSignature  sig,
+                                  const gchar     *tag)
+{
+  cmsMLU *mlu;
+
+  mlu = cmsMLUalloc (NULL, 1);
+  cmsMLUsetASCII (mlu, "en", "US", tag);
+  cmsWriteTag (profile, sig, mlu);
+  cmsMLUfree (mlu);
+}
+
+static GimpColorProfile*
+nclx_to_gimp_profile (const struct heif_color_profile_nclx *nclx)
+{
+  const gchar *primaries_name = "";
+  const gchar *trc_name = "";
+  cmsHPROFILE profile = NULL;
+  cmsCIExyY whitepoint;
+  cmsCIExyYTRIPLE primaries;
+  cmsToneCurve *curve[3];
+
+  cmsFloat64Number srgb_parameters[5] =
+  { 2.4, 1.0 / 1.055,  0.055 / 1.055, 1.0 / 12.92, 0.04045 };
+
+  cmsFloat64Number rec709_parameters[5] =
+  { 2.2, 1.0 / 1.099,  0.099 / 1.099, 1.0 / 4.5, 0.081 };
+
+  if (nclx == NULL)
+    {
+      return NULL;
+    }
+
+  if (nclx->color_primaries == heif_color_primaries_unspecified)
+    {
+      return NULL;
+    }
+
+  if (nclx->color_primaries == heif_color_primaries_ITU_R_BT_709_5)
+    {
+      if (nclx->transfer_characteristics == heif_transfer_characteristic_IEC_61966_2_1)
+        {
+          return gimp_color_profile_new_rgb_srgb();
+        }
+
+      if (nclx->transfer_characteristics == heif_transfer_characteristic_linear)
+        {
+          return gimp_color_profile_new_rgb_srgb_linear();
+        }
+    }
+
+  whitepoint.x = nclx->color_primary_white_x;
+  whitepoint.y = nclx->color_primary_white_y;
+  whitepoint.Y = 1.0f;
+
+  primaries.Red.x = nclx->color_primary_red_x;
+  primaries.Red.y = nclx->color_primary_red_y;
+  primaries.Red.Y = 1.0f;
+
+  primaries.Green.x = nclx->color_primary_green_x;
+  primaries.Green.y = nclx->color_primary_green_y;
+  primaries.Green.Y = 1.0f;
+
+  primaries.Blue.x = nclx->color_primary_blue_x;
+  primaries.Blue.y = nclx->color_primary_blue_y;
+  primaries.Blue.Y = 1.0f;
+
+  switch (nclx->color_primaries)
+    {
+    case heif_color_primaries_ITU_R_BT_709_5:
+      primaries_name = "BT.709";
+      break;
+    case   heif_color_primaries_ITU_R_BT_470_6_System_M:
+      primaries_name = "BT.470-6 System M";
+      break;
+    case heif_color_primaries_ITU_R_BT_470_6_System_B_G:
+      primaries_name = "BT.470-6 System BG";
+      break;
+    case heif_color_primaries_ITU_R_BT_601_6:
+      primaries_name = "BT.601";
+      break;
+    case heif_color_primaries_SMPTE_240M:
+      primaries_name = "SMPTE 240M";
+      break;
+    case 8:
+      primaries_name = "Generic film";
+      break;
+    case 9:
+      primaries_name = "BT.2020";
+      break;
+    case 10:
+      primaries_name = "XYZ";
+      break;
+    case 11:
+      primaries_name = "SMPTE RP 431-2";
+      break;
+    case 12:
+      primaries_name = "SMPTE EG 432-1 (DCI P3)";
+      break;
+    case 22:
+      primaries_name = "EBU Tech. 3213-E";
+      break;
+    default:
+      g_warning ("%s: Unsupported color_primaries value %d.",
+                 G_STRFUNC, nclx->color_primaries);
+      return NULL;
+      break;
+    }
+
+  switch (nclx->transfer_characteristics)
+    {
+    case heif_transfer_characteristic_ITU_R_BT_709_5:
+      curve[0] = curve[1] = curve[2] = cmsBuildParametricToneCurve (NULL, 4,
+                                                                rec709_parameters);
+      profile = cmsCreateRGBProfile (&whitepoint, &primaries, curve);
+      cmsFreeToneCurve (curve[0]);
+      trc_name = "Rec709 RGB";
+      break;
+    case heif_transfer_characteristic_ITU_R_BT_470_6_System_M:
+      curve[0] = curve[1] = curve[2] = cmsBuildGamma (NULL, 2.2f);
+      profile = cmsCreateRGBProfile (&whitepoint, &primaries, curve);
+      cmsFreeToneCurve (curve[0]);
+      trc_name = "Gamma2.2 RGB";
+      break;
+    case heif_transfer_characteristic_ITU_R_BT_470_6_System_B_G:
+      curve[0] = curve[1] = curve[2] = cmsBuildGamma (NULL, 2.8f);
+      profile = cmsCreateRGBProfile (&whitepoint, &primaries, curve);
+      cmsFreeToneCurve (curve[0]);
+      trc_name = "Gamma2.8 RGB";
+      break;
+    case heif_transfer_characteristic_linear:
+      curve[0] = curve[1] = curve[2] = cmsBuildGamma (NULL, 1.0f);
+      profile = cmsCreateRGBProfile (&whitepoint, &primaries, curve);
+      cmsFreeToneCurve (curve[0]);
+      trc_name = "linear RGB";
+      break;
+    case heif_transfer_characteristic_IEC_61966_2_1:
+      /* same as default */
+    default:
+      curve[0] = curve[1] = curve[2] = cmsBuildParametricToneCurve (NULL, 4,
+                                                                srgb_parameters);
+      profile = cmsCreateRGBProfile (&whitepoint, &primaries, curve);
+      cmsFreeToneCurve (curve[0]);
+      trc_name = "sRGB-TRC RGB";
+      break;
+    }
+
+  if (profile)
+    {
+      gchar *description = g_strdup_printf ("%s %s", primaries_name, trc_name);
+      heifplugin_color_profile_set_tag (profile, cmsSigProfileDescriptionTag,
+                                        description);
+      heifplugin_color_profile_set_tag (profile, cmsSigDeviceMfgDescTag,
+                                        "GIMP");
+      heifplugin_color_profile_set_tag (profile, cmsSigDeviceModelDescTag,
+                                        description);
+      heifplugin_color_profile_set_tag (profile, cmsSigCopyrightTag,
+                                        "Public Domain");
+      g_free (description);
+      return gimp_color_profile_new_from_lcms_profile (profile, NULL);
+    }
+
+  return NULL;
+}
+
 GimpImage *
 load_image (GFile              *file,
             gboolean            interactive,
@@ -397,6 +564,8 @@ load_image (GFile              *file,
   const guint8             *data;
   gint                      stride;
   gint                      bit_depth;
+  enum                      heif_chroma chroma;
+  GimpPrecision             precision;
 
   gimp_progress_init_printf (_("Opening '%s'"),
                              g_file_get_parse_name (file));
@@ -510,7 +679,7 @@ load_image (GFile              *file,
     }
 
   has_alpha = heif_image_handle_has_alpha_channel (handle);
-  
+
   bit_depth = heif_image_handle_get_luma_bits_per_pixel(handle);
   if (bit_depth < 0)
     {
@@ -521,28 +690,25 @@ load_image (GFile              *file,
 
       return NULL;
     }
-  
-  enum heif_chroma chroma;
-  GimpPrecision precision;
-  
-  if ( bit_depth == 8 )
+
+  if (bit_depth == 8)
     {
       precision = GIMP_PRECISION_U8_NON_LINEAR;
-      
-      if ( has_alpha )
+
+      if (has_alpha)
         {
           chroma = heif_chroma_interleaved_RGBA;
         }
-        else
-          {
-            chroma = heif_chroma_interleaved_RGB;
-          }
+      else
+        {
+          chroma = heif_chroma_interleaved_RGB;
+        }
     }
-  else //high bit depth
+  else /* high bit depth */
     {
       precision = GIMP_PRECISION_U16_NON_LINEAR;
 #if ( G_BYTE_ORDER == G_LITTLE_ENDIAN )
-      if ( has_alpha )
+      if (has_alpha)
         {
           chroma = heif_chroma_interleaved_RRGGBBAA_LE;
         }
@@ -551,7 +717,7 @@ load_image (GFile              *file,
           chroma = heif_chroma_interleaved_RRGGBB_LE;
         }
 #else
-      if ( has_alpha )
+      if (has_alpha)
         {
           chroma = heif_chroma_interleaved_RRGGBBAA_BE;
         }
@@ -597,7 +763,7 @@ load_image (GFile              *file,
           err = heif_image_handle_get_raw_color_profile (handle, profile_data);
 
           if (err.code)
-            g_warning ("%s: color profile loading failed and discarded.",
+            g_warning ("%s: ICC profile loading failed and discarded.",
                        G_STRFUNC);
           else
             profile = gimp_color_profile_new_from_icc_profile ((guint8 *) profile_data,
@@ -606,11 +772,24 @@ load_image (GFile              *file,
           g_free (profile_data);
         }
       break;
+    case heif_color_profile_type_nclx:
+      {
+        struct heif_color_profile_nclx *nclx = NULL;
 
+        err = heif_image_handle_get_nclx_color_profile (handle, &nclx);
+        if (err.code)
+          {
+            g_warning ("%s: NCLX profile loading failed and discarded.",
+                       G_STRFUNC);
+          }
+        else
+          {
+            profile = nclx_to_gimp_profile (nclx);
+            free(nclx); /* allocated by malloc in get_nclx_color_profile, heif.cc */
+          }
+      }
+      break;
     default:
-      /* heif_color_profile_type_nclx (what is that?) and any future
-       * profile type which we don't support in GIMP (yet).
-       */
       g_warning ("%s: unknown color profile type has been discarded.",
                  G_STRFUNC);
       break;
@@ -630,7 +809,12 @@ load_image (GFile              *file,
   gimp_image_set_file (image, file);
 
   if (profile)
-    gimp_image_set_color_profile (image, profile);
+    {
+      if (gimp_color_profile_is_rgb (profile))
+        {
+          gimp_image_set_color_profile (image, profile);
+        }
+    }
 
   layer = gimp_layer_new (image,
                           _("image content"),
@@ -643,81 +827,81 @@ load_image (GFile              *file,
 
   buffer = gimp_drawable_get_buffer (GIMP_DRAWABLE (layer));
 
-  data = heif_image_get_plane_readonly ( img, heif_channel_interleaved,
-                                         &stride );
-  if ( bit_depth == 8 )
+  data = heif_image_get_plane_readonly (img, heif_channel_interleaved,
+                                        &stride);
+  if (bit_depth == 8)
     {
-      if ( has_alpha )
+      if (has_alpha)
         {
-          format = babl_format_with_space ( "R'G'B'A u8",
-                                            gegl_buffer_get_format ( buffer ) );
+          format = babl_format_with_space ("R'G'B'A u8",
+                                           gegl_buffer_get_format (buffer));
         }
       else
         {
-          format = babl_format_with_space ( "R'G'B' u8",
-                                            gegl_buffer_get_format ( buffer ) );
+          format = babl_format_with_space ("R'G'B' u8",
+                                           gegl_buffer_get_format (buffer));
         }
 
 
 
-      gegl_buffer_set ( buffer,
-                        GEGL_RECTANGLE ( 0, 0, width, height ),
-                        0, format, data, stride );
+      gegl_buffer_set (buffer,
+                       GEGL_RECTANGLE (0, 0, width, height),
+                       0, format, data, stride);
     }
-  else //high bit depth
+  else /* high bit depth */
     {
       uint16_t *data16;
       const uint16_t *src16 = (const uint16_t*) data;
       uint16_t *dest16;
       gint x,y,rowentries;
       int tmp_pixelval;
-      
-      if ( has_alpha )
+
+      if (has_alpha)
         {
           rowentries = width * 4;
-          format = babl_format_with_space ( "R'G'B'A u16",
-                                            gegl_buffer_get_format ( buffer ) );
+          format = babl_format_with_space ("R'G'B'A u16",
+                                           gegl_buffer_get_format (buffer));
         }
-      else //no alpha
+      else /* no alpha */
         {
           rowentries = width * 3;
-          format = babl_format_with_space ( "R'G'B' u16",
-                                            gegl_buffer_get_format ( buffer ) );
+          format = babl_format_with_space ("R'G'B' u16",
+                                           gegl_buffer_get_format (buffer));
         }
 
-      data16 = g_malloc_n ( height, rowentries * 2 );  
+      data16 = g_malloc_n (height, rowentries * 2);
       dest16 = data16;
 
-      switch ( bit_depth )
+      switch (bit_depth)
       {
         case 10:
-          for ( y = 0; y < height; y++ )
+          for (y = 0; y < height; y++)
             {
-              for ( x = 0; x < rowentries; x++ )
+              for (x = 0; x < rowentries; x++)
                 {
-                  tmp_pixelval = ( int ) ( ( ( float ) ( 0x03ff & ( *src16 ) ) / 1023.0f ) * 65535.0f + 0.5f );
-                  *dest16 = CLAMP ( tmp_pixelval, 0, 65535 );
+                  tmp_pixelval = (int) ( ( (float) (0x03ff & (*src16)) / 1023.0f) * 65535.0f + 0.5f);
+                  *dest16 = CLAMP (tmp_pixelval, 0, 65535);
                   dest16++;
                   src16++;
                 }
             }
           break;
         case 12:
-          for ( y = 0; y < height; y++ )
+          for (y = 0; y < height; y++)
             {
-              for ( x = 0; x < rowentries; x++ )
+              for (x = 0; x < rowentries; x++)
                 {
-                  tmp_pixelval = ( int ) ( ( ( float ) ( 0x0fff & ( *src16 ) )  / 4095.0f ) * 65535.0f + 0.5f );
-                  *dest16 = CLAMP ( tmp_pixelval, 0, 65535 );
+                  tmp_pixelval = (int) ( ( (float) (0x0fff & (*src16))  / 4095.0f) * 65535.0f + 0.5f);
+                  *dest16 = CLAMP (tmp_pixelval, 0, 65535);
                   dest16++;
                   src16++;
                 }
             }
           break;
         default:
-          for ( y = 0; y < height; y++ )
+          for (y = 0; y < height; y++)
             {
-              for ( x = 0; x < rowentries; x++ )
+              for (x = 0; x < rowentries; x++)
                 {
                   *dest16 = *src16;
                   dest16++;
@@ -726,14 +910,14 @@ load_image (GFile              *file,
             }
           break;
       }
-      
-      gegl_buffer_set ( buffer,
-                        GEGL_RECTANGLE ( 0, 0, width, height ),
-                        0, format, data16, stride );
-      
-      g_free ( data16 );
+
+      gegl_buffer_set (buffer,
+                       GEGL_RECTANGLE (0, 0, width, height),
+                       0, format, data16, stride);
+
+      g_free (data16);
     }
-    
+
   g_object_unref (buffer);
 
   {
@@ -864,6 +1048,8 @@ save_image (GFile         *file,
   gboolean                  lossless;
   gint                      quality;
   gboolean                  save_profile;
+  gchar                    *basename;
+  enum heif_compression_format compression = heif_compression_HEVC;
 
   g_object_get (config,
                 "lossless",           &lossless,
@@ -972,9 +1158,8 @@ save_image (GFile         *file,
   gimp_progress_update (0.33);
 
   /*  encode to HEIF file  */
-  enum heif_compression_format compression = heif_compression_HEVC;
 #if LIBHEIF_SUPPORT_AVIF
-  gchar* basename = g_file_get_basename (file);
+  basename = g_file_get_basename (file);
   if (basename)
     {
       if ( g_str_has_suffix ( basename, ".avif" ) ||
@@ -1457,7 +1642,3 @@ save_dialog (GimpProcedure *procedure,
 
   return run;
 }
-
-
-
-
