@@ -566,6 +566,8 @@ load_image (GFile              *file,
   gint                      bit_depth;
   enum                      heif_chroma chroma;
   GimpPrecision             precision;
+  gboolean                  load_linear;
+  const char               *encoding;
 
   gimp_progress_init_printf (_("Opening '%s'"),
                              g_file_get_parse_name (file));
@@ -693,8 +695,6 @@ load_image (GFile              *file,
 
   if (bit_depth == 8)
     {
-      precision = GIMP_PRECISION_U8_NON_LINEAR;
-
       if (has_alpha)
         {
           chroma = heif_chroma_interleaved_RGBA;
@@ -706,7 +706,6 @@ load_image (GFile              *file,
     }
   else /* high bit depth */
     {
-      precision = GIMP_PRECISION_U16_NON_LINEAR;
 #if ( G_BYTE_ORDER == G_LITTLE_ENDIAN )
       if (has_alpha)
         {
@@ -805,6 +804,42 @@ load_image (GFile              *file,
    * (converting it to RGB)
    */
 
+  if (profile)
+    {
+      load_linear = gimp_color_profile_is_linear (profile);
+    }
+  else
+    {
+      load_linear = FALSE;
+    }
+
+  if(load_linear)
+    {
+        if (bit_depth == 8)
+        {
+                precision = GIMP_PRECISION_U8_LINEAR;
+                encoding = has_alpha ? "RGBA u8" : "RGB u8";
+        }
+        else
+        {
+                precision = GIMP_PRECISION_U16_LINEAR;
+                encoding = has_alpha ? "RGBA u16" : "RGB u16";
+        }
+    }
+  else /* non-linear profiles */
+    {
+        if (bit_depth == 8)
+        {
+                precision = GIMP_PRECISION_U8_NON_LINEAR;
+                encoding = has_alpha ? "R'G'B'A u8" : "R'G'B' u8";
+        }
+        else
+        {
+                precision = GIMP_PRECISION_U16_NON_LINEAR;
+                encoding = has_alpha ? "R'G'B'A u16" : "R'G'B' u16";
+        }
+    }
+
   image = gimp_image_new_with_precision (width, height, GIMP_RGB, precision);
   gimp_image_set_file (image, file);
 
@@ -829,21 +864,12 @@ load_image (GFile              *file,
 
   data = heif_image_get_plane_readonly (img, heif_channel_interleaved,
                                         &stride);
+
+  format = babl_format_with_space (encoding,
+                                   gegl_buffer_get_format (buffer));
+
   if (bit_depth == 8)
     {
-      if (has_alpha)
-        {
-          format = babl_format_with_space ("R'G'B'A u8",
-                                           gegl_buffer_get_format (buffer));
-        }
-      else
-        {
-          format = babl_format_with_space ("R'G'B' u8",
-                                           gegl_buffer_get_format (buffer));
-        }
-
-
-
       gegl_buffer_set (buffer,
                        GEGL_RECTANGLE (0, 0, width, height),
                        0, format, data, stride);
@@ -859,14 +885,10 @@ load_image (GFile              *file,
       if (has_alpha)
         {
           rowentries = width * 4;
-          format = babl_format_with_space ("R'G'B'A u16",
-                                           gegl_buffer_get_format (buffer));
         }
       else /* no alpha */
         {
           rowentries = width * 3;
-          format = babl_format_with_space ("R'G'B' u16",
-                                           gegl_buffer_get_format (buffer));
         }
 
       data16 = g_malloc_n (height, rowentries * 2);
@@ -913,7 +935,7 @@ load_image (GFile              *file,
 
       gegl_buffer_set (buffer,
                        GEGL_RECTANGLE (0, 0, width, height),
-                       0, format, data16, stride);
+                       0, format, data16, GEGL_AUTO_ROWSTRIDE);
 
       g_free (data16);
     }
