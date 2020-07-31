@@ -877,7 +877,7 @@ load_image (GFile              *file,
   else /* high bit depth */
     {
       uint16_t *data16;
-      const uint16_t *src16 = (const uint16_t*) data;
+      const uint16_t *src16;
       uint16_t *dest16;
       gint x,y,rowentries;
       int tmp_pixelval;
@@ -899,6 +899,7 @@ load_image (GFile              *file,
         case 10:
           for (y = 0; y < height; y++)
             {
+              src16 = (const uint16_t *) (y * stride + data);
               for (x = 0; x < rowentries; x++)
                 {
                   tmp_pixelval = (int) ( ( (float) (0x03ff & (*src16)) / 1023.0f) * 65535.0f + 0.5f);
@@ -911,6 +912,7 @@ load_image (GFile              *file,
         case 12:
           for (y = 0; y < height; y++)
             {
+              src16 = (const uint16_t *) (y * stride + data);
               for (x = 0; x < rowentries; x++)
                 {
                   tmp_pixelval = (int) ( ( (float) (0x0fff & (*src16))  / 4095.0f) * 65535.0f + 0.5f);
@@ -923,6 +925,7 @@ load_image (GFile              *file,
         default:
           for (y = 0; y < height; y++)
             {
+              src16 = (const uint16_t *) (y * stride + data);
               for (x = 0; x < rowentries; x++)
                 {
                   *dest16 = *src16;
