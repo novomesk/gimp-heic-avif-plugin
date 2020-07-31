@@ -20,6 +20,7 @@
 
 #include <libheif/heif.h>
 #include <lcms2.h>
+#include <gexiv2/gexiv2.h>
 
 #include <libgimp/gimp.h>
 #include <libgimp/gimpui.h>
@@ -484,7 +485,7 @@ nclx_to_gimp_profile (const struct heif_color_profile_nclx *nclx)
     {
     case heif_transfer_characteristic_ITU_R_BT_709_5:
       curve[0] = curve[1] = curve[2] = cmsBuildParametricToneCurve (NULL, 4,
-                                                                rec709_parameters);
+                                       rec709_parameters);
       profile = cmsCreateRGBProfile (&whitepoint, &primaries, curve);
       cmsFreeToneCurve (curve[0]);
       trc_name = "Rec709 RGB";
@@ -511,7 +512,7 @@ nclx_to_gimp_profile (const struct heif_color_profile_nclx *nclx)
       /* same as default */
     default:
       curve[0] = curve[1] = curve[2] = cmsBuildParametricToneCurve (NULL, 4,
-                                                                srgb_parameters);
+                                       srgb_parameters);
       profile = cmsCreateRGBProfile (&whitepoint, &primaries, curve);
       cmsFreeToneCurve (curve[0]);
       trc_name = "sRGB-TRC RGB";
@@ -992,18 +993,54 @@ load_image (GFile              *file,
     if (exif_data || xmp_data)
       {
         GimpMetadata          *metadata = gimp_metadata_new ();
-        GimpMetadataLoadFlags  flags    = GIMP_METADATA_LOAD_ALL;
+        GimpMetadataLoadFlags  flags    = GIMP_METADATA_LOAD_COMMENT | GIMP_METADATA_LOAD_RESOLUTION;
 
         if (exif_data)
-          gimp_metadata_set_from_exif (metadata,
-                                       exif_data, exif_data_size, NULL);
+          {
+            const guint8 tiffHeaderBE[4] = { 'M', 'M', 0, 42 };
+            const guint8 tiffHeaderLE[4] = { 'I', 'I', 42, 0 };
+            GExiv2Metadata *exif_metadata = GEXIV2_METADATA (metadata);
+            const guint8 *tiffheader = exif_data;
+            glong new_exif_size = exif_data_size;
+
+            while (new_exif_size >= 4)  /*Searching for TIFF Header*/
+              {
+                if (tiffheader[0] == tiffHeaderBE[0] && tiffheader[1] == tiffHeaderBE[1] &&
+                    tiffheader[2] == tiffHeaderBE[2] && tiffheader[2] == tiffHeaderBE[2])
+                  {
+                    break;
+                  }
+                if (tiffheader[0] == tiffHeaderLE[0] && tiffheader[1] == tiffHeaderLE[1] &&
+                    tiffheader[2] == tiffHeaderLE[2] && tiffheader[2] == tiffHeaderLE[2])
+                  {
+                    break;
+                  }
+                new_exif_size--;
+                tiffheader++;
+              }
+
+            if (new_exif_size > 4)   /* TIFF header + some data found*/
+              {
+                if (! gexiv2_metadata_open_buf (exif_metadata, tiffheader, new_exif_size, error))
+                  {
+                    g_printerr ("%s: Failed to set EXIF metadata: %s\n", G_STRFUNC, (*error)->message);
+                    g_clear_error (error);
+                  }
+              }
+            else
+              {
+                g_printerr ("%s: EXIF metadata not set\n", G_STRFUNC);
+              }
+          }
 
         if (xmp_data)
-          gimp_metadata_set_from_xmp (metadata,
-                                      xmp_data, xmp_data_size, NULL);
-
-        if (profile)
-          flags &= ~GIMP_METADATA_LOAD_COLORSPACE;
+          {
+            if (!gimp_metadata_set_from_xmp (metadata, xmp_data, xmp_data_size, error))
+              {
+                g_printerr ("%s: Failed to set XMP metadata: %s\n", G_STRFUNC, (*error)->message);
+                g_clear_error (error);
+              }
+          }
 
         gimp_image_metadata_load_finish (image, "image/heif",
                                          metadata, flags,
