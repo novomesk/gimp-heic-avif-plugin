@@ -1079,7 +1079,7 @@ write_callback (struct heif_context *ctx,
   struct heif_error  heif_error;
 
   heif_error.code    = heif_error_Ok;
-  heif_error.subcode = heif_error_Ok;
+  heif_error.subcode = heif_suberror_Unspecified;
   heif_error.message = "";
 
   if (! g_output_stream_write_all (output, data, size, NULL, NULL, &error))
