@@ -32,7 +32,6 @@
 #define SAVE_PROC      "file-heif-save"
 #define PLUG_IN_BINARY "file-heif"
 
-#define LIBHEIF_SUPPORT_AVIF ( LIBHEIF_NUMERIC_VERSION >= ((1<<24) | (7<<16) | (0<<8) | 0) )
 
 typedef struct _Heif      Heif;
 typedef struct _HeifClass HeifClass;
@@ -147,13 +146,13 @@ heif_create_procedure (GimpPlugIn  *plug_in,
                                               TRUE);
       gimp_file_procedure_set_mime_types (GIMP_FILE_PROCEDURE (procedure),
                                           "image/heif"
-#if LIBHEIF_SUPPORT_AVIF
+#if LIBHEIF_HAVE_VERSION(1,8,0)
                                           ",image/avif"
 #endif
                                          );
       gimp_file_procedure_set_extensions (GIMP_FILE_PROCEDURE (procedure),
                                           "heif,heic"
-#if LIBHEIF_SUPPORT_AVIF
+#if LIBHEIF_HAVE_VERSION(1,8,0)
                                           ",avif"
 #endif
                                          );
@@ -168,7 +167,7 @@ heif_create_procedure (GimpPlugIn  *plug_in,
                                       "4,string,ftypheis,4,string,ftyphevm,"
                                       "4,string,ftyphevs,4,string,ftypmif1,"
                                       "4,string,ftypmsf1"
-#if LIBHEIF_SUPPORT_AVIF
+#if LIBHEIF_HAVE_VERSION(1,8,0)
                                       ",4,string,ftypavif"
 #endif
                                      );
@@ -197,13 +196,13 @@ heif_create_procedure (GimpPlugIn  *plug_in,
                                               TRUE);
       gimp_file_procedure_set_mime_types (GIMP_FILE_PROCEDURE (procedure),
                                           "image/heif"
-#if LIBHEIF_SUPPORT_AVIF
+#if LIBHEIF_HAVE_VERSION(1,8,0)
                                           ",image/avif"
 #endif
                                          );
       gimp_file_procedure_set_extensions (GIMP_FILE_PROCEDURE (procedure),
                                           "heif,heic"
-#if LIBHEIF_SUPPORT_AVIF
+#if LIBHEIF_HAVE_VERSION(1,8,0)
                                           ",avif"
 #endif
                                          );
@@ -371,6 +370,7 @@ get_file_size (GFile   *file,
   return size;
 }
 
+#if LIBHEIF_HAVE_VERSION(1,8,0)
 static void
 heifplugin_color_profile_set_tag (cmsHPROFILE      profile,
                                   cmsTagSignature  sig,
@@ -536,6 +536,7 @@ nclx_to_gimp_profile (const struct heif_color_profile_nclx *nclx)
 
   return NULL;
 }
+#endif
 
 GimpImage *
 load_image (GFile              *file,
@@ -772,6 +773,7 @@ load_image (GFile              *file,
           g_free (profile_data);
         }
       break;
+#if LIBHEIF_HAVE_VERSION(1,8,0)
     case heif_color_profile_type_nclx:
       {
         struct heif_color_profile_nclx *nclx = NULL;
@@ -785,10 +787,11 @@ load_image (GFile              *file,
         else
           {
             profile = nclx_to_gimp_profile (nclx);
-            free(nclx); /* allocated by malloc in get_nclx_color_profile, heif.cc */
+            heif_nclx_color_profile_free(nclx);
           }
       }
       break;
+#endif
     default:
       g_warning ("%s: unknown color profile type has been discarded.",
                  G_STRFUNC);
@@ -974,19 +977,24 @@ load_image (GFile              *file,
 
     n_metadata =
       heif_image_handle_get_list_of_metadata_block_IDs (handle,
-                                                        "XMP",
+                                                        "mime",
                                                         &metadata_id, 1);
     if (n_metadata > 0)
       {
-        xmp_data_size = heif_image_handle_get_metadata_size (handle,
-                                                             metadata_id);
-        xmp_data = g_alloca (xmp_data_size);
-
-        err = heif_image_handle_get_metadata (handle, metadata_id, xmp_data);
-        if (err.code != 0)
+        if (g_strcmp0 (
+              heif_image_handle_get_metadata_content_type (handle, metadata_id),
+              "application/rdf+xml") == 0)
           {
-            xmp_data      = NULL;
-            xmp_data_size = 0;
+            xmp_data_size = heif_image_handle_get_metadata_size (handle,
+                            metadata_id);
+            xmp_data = g_alloca (xmp_data_size);
+
+            err = heif_image_handle_get_metadata (handle, metadata_id, xmp_data);
+            if (err.code != 0)
+              {
+                xmp_data      = NULL;
+                xmp_data_size = 0;
+              }
           }
       }
 
@@ -1110,8 +1118,22 @@ save_image (GFile         *file,
   gboolean                  lossless;
   gint                      quality;
   gboolean                  save_profile;
-  gchar                    *basename;
   enum heif_compression_format compression = heif_compression_HEVC;
+
+#if LIBHEIF_HAVE_VERSION(1,8,0)
+  gchar                    *basename;
+
+  basename = g_file_get_basename (file);
+  if (basename)
+    {
+      if (g_str_has_suffix (basename, ".avif") ||
+          g_str_has_suffix (basename, ".AVIF"))
+        {
+          compression = heif_compression_AV1;
+        }
+      g_free (basename);
+    }
+#endif
 
   g_object_get (config,
                 "lossless",           &lossless,
@@ -1183,6 +1205,23 @@ save_image (GFile         *file,
 
       g_object_unref (profile);
     }
+  else
+    {
+#if LIBHEIF_HAVE_VERSION(1,8,0)
+      /* We save as sRGB */
+      struct heif_color_profile_nclx nclx_profile;
+
+      nclx_profile.color_primaries = heif_color_primaries_ITU_R_BT_709_5;
+      nclx_profile.transfer_characteristics = heif_transfer_characteristic_IEC_61966_2_1;
+      nclx_profile.matrix_coefficients = heif_matrix_coefficients_ITU_R_BT_601_6;
+      nclx_profile.full_range_flag = 1;
+
+      heif_image_set_nclx_color_profile (h_image, &nclx_profile);
+
+      space = babl_space ("sRGB");
+      out_linear = FALSE;
+#endif
+    }
 #endif /* HAVE_LIBHEIF_1_4_0 */
 
   if (! space)
@@ -1220,18 +1259,6 @@ save_image (GFile         *file,
   gimp_progress_update (0.33);
 
   /*  encode to HEIF file  */
-#if LIBHEIF_SUPPORT_AVIF
-  basename = g_file_get_basename (file);
-  if (basename)
-    {
-      if ( g_str_has_suffix ( basename, ".avif" ) ||
-           g_str_has_suffix ( basename, ".AVIF" ) )
-        {
-          compression = heif_compression_AV1;
-        }
-      g_free (basename);
-    }
-#endif
   err = heif_context_get_encoder_for_format (context,
                                              compression,
                                              &encoder);
