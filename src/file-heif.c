@@ -1191,6 +1191,7 @@ save_image (GFile         *file,
       g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
                    "Unsupported bit depth: %d",
                    save_bit_depth);
+      heif_context_free (context);
       return FALSE;
       break;
     }
@@ -1200,6 +1201,7 @@ save_image (GFile         *file,
       g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
                    _("Encoding HEIF image failed: %s"),
                    err.message);
+      heif_context_free (context);
       return FALSE;
     }
 
@@ -1408,6 +1410,15 @@ save_image (GFile         *file,
                                              compression,
                                              &encoder);
 
+  if (err.code != 0)
+    {
+      g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
+                   "Unable to find suitable HEIF encoder");
+      heif_image_release (h_image);
+      heif_context_free (context);
+      return FALSE;
+  }
+
   heif_encoder_set_lossy_quality (encoder, quality);
   heif_encoder_set_lossless (encoder, lossless);
   /* heif_encoder_set_logging_level (encoder, logging_level); */
@@ -1422,6 +1433,9 @@ save_image (GFile         *file,
       g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
                    _("Encoding HEIF image failed: %s"),
                    err.message);
+      heif_encoder_release (encoder);
+      heif_image_release (h_image);
+      heif_context_free (context);
       return FALSE;
     }
 
@@ -1436,7 +1450,12 @@ save_image (GFile         *file,
                                             NULL, FALSE, G_FILE_CREATE_NONE,
                                             NULL, error));
   if (! output)
-    return FALSE;
+    {
+      heif_encoder_release (encoder);
+      heif_image_release (h_image);
+      heif_context_free (context);
+      return FALSE;
+    }
 
   err = heif_context_write (context, &writer, output);
 
@@ -1451,15 +1470,18 @@ save_image (GFile         *file,
       g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
                    _("Writing HEIF image failed: %s"),
                    err.message);
+
+      heif_encoder_release (encoder);
+      heif_image_release (h_image);
+      heif_context_free (context);
       return FALSE;
     }
 
   g_object_unref (output);
 
-  heif_context_free (context);
-  heif_image_release (h_image);
-
   heif_encoder_release (encoder);
+  heif_image_release (h_image);
+  heif_context_free (context);
 
   gimp_progress_update (1.0);
 
@@ -1827,6 +1849,7 @@ save_dialog (GimpProcedure *procedure,
   GtkWidget *button;
   GtkWidget *frame;
 #if LIBHEIF_HAVE_VERSION(1,8,0)
+  GtkWidget *grid2;
   GtkListStore  *store;
   GtkWidget     *combo;
 #endif
@@ -1867,6 +1890,11 @@ save_dialog (GimpProcedure *procedure,
                              FALSE, 0, 0);
 
 #if LIBHEIF_HAVE_VERSION(1,8,0)
+  grid2 = gtk_grid_new ();
+  gtk_grid_set_column_spacing (GTK_GRID (grid2), 6);
+  gtk_box_pack_start (GTK_BOX (main_vbox), grid2, FALSE, FALSE, 0);
+  gtk_widget_show (grid2);
+
   store = gimp_int_store_new ("8 bit/channel",    8,
                               "10 bit/channel (HDR)",  10,
                               "12 bit/channel (HDR)", 12,
@@ -1875,7 +1903,7 @@ save_dialog (GimpProcedure *procedure,
   combo = gimp_prop_int_combo_box_new (config, "save-bit-depth",
                                        GIMP_INT_STORE (store));
   g_object_unref (store);
-  gimp_grid_attach_aligned (GTK_GRID (grid), 0, 2,
+  gimp_grid_attach_aligned (GTK_GRID (grid2), 0, 1,
                             "Bit depth:", 0.0, 0.5,
                             combo, 2);
 #endif
