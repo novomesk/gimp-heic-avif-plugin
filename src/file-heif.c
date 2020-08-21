@@ -527,7 +527,9 @@ nclx_to_gimp_profile (const struct heif_color_profile_nclx *nclx)
 
   if (profile)
     {
+      GimpColorProfile *new_profile;
       gchar *description = g_strdup_printf ("%s %s", primaries_name, trc_name);
+
       heifplugin_color_profile_set_tag (profile, cmsSigProfileDescriptionTag,
                                         description);
       heifplugin_color_profile_set_tag (profile, cmsSigDeviceMfgDescTag,
@@ -536,8 +538,12 @@ nclx_to_gimp_profile (const struct heif_color_profile_nclx *nclx)
                                         description);
       heifplugin_color_profile_set_tag (profile, cmsSigCopyrightTag,
                                         "Public Domain");
+
+      new_profile = gimp_color_profile_new_from_lcms_profile (profile, NULL);
+
+      cmsCloseProfile (profile);
       g_free (description);
-      return gimp_color_profile_new_from_lcms_profile (profile, NULL);
+      return new_profile;
     }
 
   return NULL;
