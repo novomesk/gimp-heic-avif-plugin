@@ -75,7 +75,7 @@ struct _HeifClass
 
 GType                   heif_get_type         (void) G_GNUC_CONST;
 
-static GList          * heif_query_procedures (GimpPlugIn           *plug_in);
+static GList          * heif_init_procedures  (GimpPlugIn           *plug_in);
 static GimpProcedure  * heif_create_procedure (GimpPlugIn           *plug_in,
                                                const gchar          *name);
 
@@ -133,7 +133,7 @@ heif_class_init (HeifClass *klass)
 {
   GimpPlugInClass *plug_in_class = GIMP_PLUG_IN_CLASS (klass);
 
-  plug_in_class->query_procedures = heif_query_procedures;
+  plug_in_class->init_procedures  = heif_init_procedures;
   plug_in_class->create_procedure = heif_create_procedure;
 }
 
@@ -143,7 +143,7 @@ heif_init (Heif *heif)
 }
 
 static GList *
-heif_query_procedures (GimpPlugIn *plug_in)
+heif_init_procedures (GimpPlugIn *plug_in)
 {
   GList *list = NULL;
 
@@ -1427,7 +1427,7 @@ save_image (GFile                        *file,
   gint                      quality;
   gboolean                  save_profile;
   gint                      save_bit_depth = 8;
-#if LIBHEIF_HAVE_VERSION(1,9,0)
+#if LIBHEIF_HAVE_VERSION(1,10,0)
   HeifpluginExportFormat    pixel_format = HEIFPLUGIN_EXPORT_FORMAT_YUV420;
 #endif
 #if LIBHEIF_HAVE_VERSION(1,8,0)
@@ -1451,7 +1451,7 @@ save_image (GFile                        *file,
   g_object_get (config,
                 "lossless",           &lossless,
                 "quality",            &quality,
-#if LIBHEIF_HAVE_VERSION(1,9,0)
+#if LIBHEIF_HAVE_VERSION(1,10,0)
                 "pixel-format",       &pixel_format,
 #endif
 #if LIBHEIF_HAVE_VERSION(1,8,0)
@@ -1555,8 +1555,8 @@ save_image (GFile                        *file,
             }
         }
 
-#if LIBHEIF_HAVE_VERSION(1,9,0)
-      if (pixel_format == HEIFPLUGIN_EXPORT_FORMAT_RGB && save_bit_depth == 8)
+#if LIBHEIF_HAVE_VERSION(1,10,0)
+      if (pixel_format == HEIFPLUGIN_EXPORT_FORMAT_RGB)
         {
           nclx_profile.version = 1;
           nclx_profile.color_primaries = heif_color_primaries_unspecified;
@@ -1603,8 +1603,8 @@ save_image (GFile                        *file,
       nclx_profile.matrix_coefficients = heif_matrix_coefficients_ITU_R_BT_601_6;
       nclx_profile.full_range_flag = 1;
 
-#if LIBHEIF_HAVE_VERSION(1,9,0)
-      if (pixel_format == HEIFPLUGIN_EXPORT_FORMAT_RGB && save_bit_depth == 8)
+#if LIBHEIF_HAVE_VERSION(1,10,0)
+      if (pixel_format == HEIFPLUGIN_EXPORT_FORMAT_RGB)
         {
           nclx_profile.matrix_coefficients = heif_matrix_coefficients_RGB_GBR;
         }
@@ -1770,7 +1770,7 @@ save_image (GFile                        *file,
 
 #if LIBHEIF_HAVE_VERSION(1,8,0)
   encoder_name = heif_encoder_get_name (encoder);
-#if LIBHEIF_HAVE_VERSION(1,9,0)
+#if LIBHEIF_HAVE_VERSION(1,10,0)
 
   if (lossless && pixel_format != HEIFPLUGIN_EXPORT_FORMAT_RGB)
     {
@@ -1826,7 +1826,7 @@ save_image (GFile                        *file,
     {
       int parameter_number;
 
-      parameter_number = g_get_num_processors();
+      parameter_number = gimp_get_num_processors();
       parameter_number = CLAMP(parameter_number, 1, 16);
 
       err = heif_encoder_set_parameter_integer (encoder, "threads", parameter_number);
@@ -1845,9 +1845,16 @@ save_image (GFile                        *file,
               break;
             case HEIFPLUGIN_ENCODER_SPEED_FASTER:
               parameter_number = 6;
+#if LIBHEIF_HAVE_VERSION(1,10,0)
+              err = heif_encoder_set_parameter_boolean (encoder, "realtime", 1);
+              if (err.code != 0)
+                {
+                  g_printerr ("Failed to set realtime=1 for %s encoder: %s",  encoder_name, err.message);
+                }
+#endif
               break;
             default: /*  HEIFPLUGIN_ENCODER_SPEED_BALANCED */
-              parameter_number = 4;
+              parameter_number = 5;
               break;
             }
 
@@ -2480,6 +2487,7 @@ save_dialog (GimpProcedure *procedure,
   GtkWidget *main_vbox;
   GtkWidget *grid;
   GtkWidget *button;
+  GtkWidget *scale;
   GtkWidget *frame;
 #if LIBHEIF_HAVE_VERSION(1,8,0)
   GtkWidget *grid2;
@@ -2519,13 +2527,14 @@ save_dialog (GimpProcedure *procedure,
                           G_BINDING_SYNC_CREATE |
                           G_BINDING_INVERT_BOOLEAN);
 
-  gimp_prop_scale_entry_new (config, "quality",
-                             GTK_GRID (grid), 0, 1,
-                             _("_Quality"),
-                             1, 10, 0,
-                             FALSE, 0, 0);
+  scale = gimp_prop_scale_entry_new (config, "quality",
+                                     NULL, 1.0, FALSE, 0, 0);
+  gtk_widget_hide (gimp_labeled_get_label (GIMP_LABELED (scale)));
+  gimp_grid_attach_aligned (GTK_GRID (grid), 0, 1,
+                            _("_Quality"),
+                            0.0, 0.5, scale, 2);
 
-#if LIBHEIF_HAVE_VERSION(1,9,0)
+#if LIBHEIF_HAVE_VERSION(1,10,0)
   store = gimp_int_store_new (_("RGB"), HEIFPLUGIN_EXPORT_FORMAT_RGB,
                               _("YUV444"), HEIFPLUGIN_EXPORT_FORMAT_YUV444,
                               _("YUV420"), HEIFPLUGIN_EXPORT_FORMAT_YUV420,
